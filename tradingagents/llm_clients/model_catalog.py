@@ -12,6 +12,32 @@ _CUSTOM_ONLY: dict[str, list[ModelOption]] = {
     "deep": [("Custom model ID", "custom")],
 }
 
+# Ollama Cloud (ollama.com) hosted catalog, smallest -> largest. The quick list
+# leads with the cheap/fast models; the deep list reverses it to lead with the
+# large reasoning models.
+_OLLAMA_CLOUD_OPTIONS: list[ModelOption] = [
+    ("DeepSeek V4.1 Flash (cloud)", "deepseek-v4.1-flash"),
+    ("GLM-5.3 Flash (cloud)", "glm-5.3-flash"),
+    ("DeepSeek V4 Flash (cloud)", "deepseek-v4-flash"),
+    ("GPT-OSS 20B (cloud)", "gpt-oss:20b"),
+    ("Nemotron 3 Nano 30B (cloud)", "nemotron-3-nano:30b"),
+    ("MiniMax M2.7 (cloud)", "minimax-m2.7"),
+    ("Gemma 4 31B (cloud)", "gemma4:31b"),
+    ("GLM-5.3 (cloud)", "glm-5.3"),
+    ("GLM-5.2 (cloud)", "glm-5.2"),
+    ("GLM-5.1 (cloud)", "glm-5.1"),
+    ("Kimi K2.7 Code (cloud)", "kimi-k2.7-code"),
+    ("Kimi K2.6 (cloud)", "kimi-k2.6"),
+    ("Kimi K3 (cloud)", "kimi-k3"),
+    ("MiniMax M3 (cloud)", "minimax-m3"),
+    ("DeepSeek V4 Pro (cloud)", "deepseek-v4-pro"),
+    ("Nemotron 3 Super (cloud)", "nemotron-3-super"),
+    ("Nemotron 3 Ultra (cloud)", "nemotron-3-ultra"),
+    ("GPT-OSS 120B (cloud)", "gpt-oss:120b"),
+    ("Qwen 3.5 397B (cloud)", "qwen3.5:397b"),
+    ("Mistral Large 3 675B (cloud)", "mistral-large-3:675b"),
+]
+
 
 # Shared model list for GLM via Z.AI (international) and BigModel (China).
 # Source: docs.z.ai (GLM Coding Plan supported models + LLM guides).
@@ -192,6 +218,12 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Qwen3:latest (8B)", "qwen3:latest"),
             ("Custom model ID", "custom"),
         ],
+    },
+    # Ollama Cloud: curated hosted catalog (no "custom" — cloud model IDs are
+    # fixed by the service, and get_known_models()/validators rely on this list).
+    "ollama_cloud": {
+        "quick": list(_OLLAMA_CLOUD_OPTIONS),
+        "deep": list(reversed(_OLLAMA_CLOUD_OPTIONS)),
     },
     # Generic OpenAI-compatible endpoint: the model is whatever the user's
     # server serves, so only "Custom model ID" is offered.
