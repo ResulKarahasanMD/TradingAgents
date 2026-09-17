@@ -16,6 +16,19 @@ class MacOSBridgeTests(unittest.TestCase):
         self.assertIn("ollama_cloud", provider_values)
         self.assertIn("custom", language_values)
 
+    def test_catalog_mirrors_cli_provider_table(self):
+        from cli.utils import _llm_provider_table
+
+        providers = {provider["value"]: provider for provider in build_catalog()["providers"]}
+
+        self.assertEqual(list(providers), [value for _, value, _ in _llm_provider_table()])
+        for provider in providers.values():
+            models = provider["quick_models"] + provider["deep_models"]
+            self.assertNotIn("custom", [model["value"] for model in models])
+        self.assertFalse(providers["ollama_cloud"]["supports_custom_models"])
+        for value in ("openrouter", "azure", "groq", "openai_compatible"):
+            self.assertTrue(providers[value]["supports_custom_models"])
+
     def test_normalize_request_orders_analysts_and_applies_provider_default_url(self):
         today = dt.date.today().isoformat()
         request = normalize_request(

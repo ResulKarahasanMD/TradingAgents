@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from cli.stats_handler import StatsCallbackHandler
+from cli.utils import _llm_provider_table
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import get_model_options
@@ -115,15 +116,6 @@ RESEARCH_DEPTHS = [
         "value": 5,
         "summary": "Longest, most comprehensive research path.",
     },
-]
-PROVIDERS = [
-    {"name": "OpenAI", "value": "openai", "base_url": "https://api.openai.com/v1"},
-    {"name": "Google", "value": "google", "base_url": None},
-    {"name": "Anthropic", "value": "anthropic", "base_url": "https://api.anthropic.com/"},
-    {"name": "xAI", "value": "xai", "base_url": "https://api.x.ai/v1"},
-    {"name": "OpenRouter", "value": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
-    {"name": "Ollama", "value": "ollama", "base_url": "http://localhost:11434/v1"},
-    {"name": "Ollama Cloud", "value": "ollama_cloud", "base_url": "https://ollama.com/v1"},
 ]
 OPENAI_REASONING_EFFORTS = [
     {"label": "Medium (Default)", "value": "medium"},
@@ -301,27 +293,30 @@ class SessionTracker:
         }
 
 
+def _catalog_models(provider: str, mode: str) -> list[dict[str, str]]:
+    try:
+        options = get_model_options(provider, mode)
+    except KeyError:
+        return []
+    return [{"label": label, "value": model} for label, model in options if model != "custom"]
+
+
 def build_catalog() -> dict[str, Any]:
     providers: list[dict[str, Any]] = []
-    for provider in PROVIDERS:
-        value = provider["value"]
+    for name, value, base_url in _llm_provider_table():
+        # The app shows either a model picker or a free-text field, so the
+        # CLI's "Custom model ID" entry is dropped and providers left without
+        # a curated list (OpenRouter, Azure, custom-only) get the text field.
+        quick_models = _catalog_models(value, "quick")
+        deep_models = _catalog_models(value, "deep")
         provider_options = {
-            "name": provider["name"],
+            "name": name,
             "value": value,
-            "base_url": provider["base_url"],
-            "supports_custom_models": value == "openrouter",
-            "quick_models": [],
-            "deep_models": [],
+            "base_url": base_url,
+            "supports_custom_models": not (quick_models and deep_models),
+            "quick_models": quick_models,
+            "deep_models": deep_models,
         }
-        if value != "openrouter":
-            provider_options["quick_models"] = [
-                {"label": label, "value": model}
-                for label, model in get_model_options(value, "quick")
-            ]
-            provider_options["deep_models"] = [
-                {"label": label, "value": model}
-                for label, model in get_model_options(value, "deep")
-            ]
         providers.append(provider_options)
 
     return {
@@ -364,7 +359,7 @@ def normalize_request(payload: dict[str, Any]) -> AnalysisRequest:
         raise ValueError("Research depth must be one of 1, 3, or 5.")
 
     provider = str(payload.get("llm_provider", DEFAULT_CONFIG["llm_provider"])).strip().lower()
-    provider_defaults = {provider_item["value"]: provider_item["base_url"] for provider_item in PROVIDERS}
+    provider_defaults = {value: base_url for _, value, base_url in _llm_provider_table()}
     if provider not in provider_defaults:
         raise ValueError(f"Unsupported provider: {provider}")
 
