@@ -22,7 +22,11 @@ from tradingagents.agents import (
 )
 from tradingagents.agents.utils.agent_states import AgentState
 
-from .analyst_execution import build_analyst_execution_plan
+from .analyst_execution import (
+    PARALLEL_ANALYST_NODE,
+    build_analyst_execution_plan,
+    create_parallel_analyst_team,
+)
 from .conditional_logic import ConditionalLogic
 
 # Every target a shared conditional router can return. Each edge driven by the
@@ -51,8 +55,10 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        parallel_analysts: bool = False,
     ):
         """Initialize with required components."""
+        self.parallel_analysts = parallel_analysts
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
@@ -95,10 +101,21 @@ class GraphSetup:
         workflow = StateGraph(AgentState)
 
         # Add analyst nodes to the graph
-        for spec in plan.specs:
-            workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
-            workflow.add_node(spec.clear_node, create_msg_delete())
-            workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
+        run_parallel = self.parallel_analysts and len(plan.specs) > 1
+        if run_parallel:
+            workflow.add_node(
+                PARALLEL_ANALYST_NODE,
+                create_parallel_analyst_team(
+                    plan,
+                    {spec.key: analyst_factories[spec.key]() for spec in plan.specs},
+                    self.tool_nodes,
+                ),
+            )
+        else:
+            for spec in plan.specs:
+                workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
+                workflow.add_node(spec.clear_node, create_msg_delete())
+                workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
 
         # Add other nodes
         workflow.add_node("Bull Researcher", bull_researcher_node)
@@ -111,11 +128,15 @@ class GraphSetup:
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
         # Define edges
-        # Start with the first analyst
-        workflow.add_edge(START, plan.specs[0].agent_node)
+        if run_parallel:
+            workflow.add_edge(START, PARALLEL_ANALYST_NODE)
+            workflow.add_edge(PARALLEL_ANALYST_NODE, "Bull Researcher")
+        else:
+            # Start with the first analyst
+            workflow.add_edge(START, plan.specs[0].agent_node)
 
         # Connect analysts in sequence
-        for i, spec in enumerate(plan.specs):
+        for i, spec in enumerate(() if run_parallel else plan.specs):
             current_analyst = spec.agent_node
             current_tools = spec.tool_node
             current_clear = spec.clear_node

@@ -16,10 +16,13 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
+    "TRADINGAGENTS_PARALLEL_ANALYSTS":    "parallel_analysts",
+    "TRADINGAGENTS_REDDIT_BACKOFF_BUDGET": "reddit_backoff_budget_seconds",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
     "TRADINGAGENTS_MAX_TOKENS":           "max_tokens",
+    "TRADINGAGENTS_LLM_TIMEOUT":          "llm_timeout",
     # Provider-specific reasoning/thinking knobs (None = each provider's own
     # default). Settable here for non-interactive runs; the CLI also offers an
     # interactive choice, which is skipped when the matching var is set.
@@ -106,6 +109,12 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # unbounded reasoning/output and hangs or trips a gateway idle timeout
     # (e.g. some deepseek-v4-flash deployments, #1204).
     "max_tokens": None,
+    # Per-request timeout in seconds forwarded to every provider chat client.
+    # None leaves each SDK at its own default (OpenAI/Anthropic: 600s, and the
+    # SDK retries a timed-out request, so a stalled endpoint can hold a run for
+    # 600s x (retries + 1)). Lower it to fail fast on a hung hosted endpoint;
+    # keep it above the longest reasoning-model response you expect.
+    "llm_timeout": None,
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,
@@ -116,6 +125,18 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
     "max_recur_limit": 100,
+    # Run the selected analysts concurrently in one graph node instead of one
+    # after another. They are independent, so analyst-phase wall time drops from
+    # the sum of the analysts to the slowest one. Trade-offs: the analyst phase
+    # checkpoints as a single step, reports arrive together, and the provider
+    # sees up to 4 simultaneous requests (mind rate limits).
+    "parallel_analysts": False,
+    # Reddit answers bursts with 429 and only a ~60s wait clears it, so each of
+    # the three subreddits may back off once: up to ~3 minutes of dead time in
+    # the sentiment analyst. Once a fetch has cost this many seconds, remaining
+    # rate-limited subreddits are marked unavailable instead of waited on.
+    # None = unbounded (default); 0 = never back off.
+    "reddit_backoff_budget_seconds": None,
     # News / data fetching parameters
     # Increase for longer lookback strategies or to broaden macro coverage;
     # decrease to reduce token usage in agent prompts.

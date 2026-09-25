@@ -63,6 +63,19 @@ def _coerce_max_retries(value):
     return n
 
 
+def _coerce_timeout(value):
+    """Validate an ``llm_timeout`` value to positive seconds (env vars are strings)."""
+    if isinstance(value, bool):
+        raise ValueError(f"llm_timeout must be a number, not a boolean: {value!r}")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"llm_timeout must be a number of seconds, got {value!r}") from exc
+    if not seconds > 0 or seconds == float("inf"):
+        raise ValueError(f"llm_timeout must be > 0 seconds, got {value!r}")
+    return seconds
+
+
 def _coerce_max_tokens(value):
     """Validate a ``max_tokens`` value to a positive int (env vars are strings)."""
     if isinstance(value, bool):
@@ -143,6 +156,7 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            parallel_analysts=bool(self.config.get("parallel_analysts", False)),
         )
 
         self.propagator = Propagator(
@@ -204,6 +218,12 @@ class TradingAgentsGraph:
         if max_tokens is not None and max_tokens != "":
             key = "max_output_tokens" if provider == "google" else "max_tokens"
             kwargs[key] = _coerce_max_tokens(max_tokens)
+
+        # Per-request timeout is cross-provider (every chat client accepts
+        # ``timeout``; Bedrock ignores it). Forward only when explicitly set.
+        timeout = self.config.get("llm_timeout")
+        if timeout is not None and timeout != "":
+            kwargs["timeout"] = _coerce_timeout(timeout)
 
         return kwargs
 
@@ -399,6 +419,7 @@ class TradingAgentsGraph:
             f"debate={self.config['max_debate_rounds']}",
             f"risk={self.config['max_risk_discuss_rounds']}",
             f"asset={asset_type}",
+            f"parallel={bool(self.config.get('parallel_analysts', False))}",
         ])
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):

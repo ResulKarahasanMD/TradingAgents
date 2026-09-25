@@ -4,6 +4,7 @@ path's degradation (#862), and chunked-transfer error handling (#1024)."""
 from __future__ import annotations
 
 import http.client
+import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
@@ -302,3 +303,40 @@ class TestFailedFetchIsNotSilence:
                 "NVDA", subreddits=("a", "b", "c"), inter_request_delay=0
             )
         assert seen == [True, False, False]
+
+
+@pytest.mark.unit
+class RedditBackoffBudgetTests(unittest.TestCase):
+    """reddit_backoff_budget_seconds bounds the 429 back-off per analysis."""
+
+    def _retries_seen(self, budget, clock):
+        seen = []
+
+        def record(t, sub, limit, timeout, _retry=True):
+            seen.append(_retry)
+            return []
+
+        with patch.object(reddit, "get_config", return_value={"reddit_backoff_budget_seconds": budget}), \
+             patch.object(reddit, "_fetch_subreddit", side_effect=record), \
+             patch.object(reddit.time, "monotonic", side_effect=clock), \
+             patch.object(reddit.time, "sleep"):
+            reddit.fetch_reddit_posts("ISRG")
+        return seen
+
+    def test_unset_budget_keeps_every_retry(self):
+        self.assertEqual(self._retries_seen(None, [0, 0, 70, 140]), [True, True, True])
+
+    def test_budget_stops_backoff_once_spent(self):
+        # started=0; the first subreddit cost 65s (one back-off), over a 30s budget.
+        self.assertEqual(self._retries_seen(30, [0, 0, 65, 66]), [True, False, False])
+
+    def test_env_string_budget_is_coerced(self):
+        self.assertEqual(self._retries_seen("30", [0, 0, 65, 66]), [True, False, False])
+
+    def test_zero_budget_never_backs_off(self):
+        self.assertEqual(self._retries_seen(0, [0, 0, 0, 0]), [False, False, False])
+
+    def test_invalid_budget_fails_loudly(self):
+        for bad in ("abc", -1):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self._retries_seen(bad, [0, 0, 0, 0])

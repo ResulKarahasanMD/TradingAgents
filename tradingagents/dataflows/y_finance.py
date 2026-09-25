@@ -175,17 +175,15 @@ def get_stock_stats_indicators_window(
         while current_dt >= before:
             date_str = current_dt.strftime('%Y-%m-%d')
 
-            # Look up the indicator value for this date
+            # Only dates with a bar are listed. Spelling out every weekend and
+            # holiday as an "N/A" line was ~40% of the payload, re-sent to the
+            # model on every tool round, and carried no information.
             if date_str in indicator_data:
-                indicator_value = indicator_data[date_str]
-            else:
-                indicator_value = "N/A: Not a trading day (weekend or holiday)"
-
-            date_values.append((date_str, indicator_value))
+                date_values.append((date_str, _compact_value(indicator_data[date_str])))
             current_dt = current_dt - relativedelta(days=1)
 
         # Build the result string
-        ind_string = ""
+        ind_string = _NON_TRADING_NOTE
         for date_str, value in date_values:
             ind_string += f"{date_str}: {value}\n"
 
@@ -211,6 +209,21 @@ def get_stock_stats_indicators_window(
     )
 
     return result_str
+
+
+_NON_TRADING_NOTE = (
+    "(Dates without a row are non-trading days: weekends, holidays, or a "
+    "session whose bar has not settled yet.)\n"
+)
+
+
+def _compact_value(value: str) -> str:
+    """Trim float noise: 374.48479919433595 -> 374.4848 (4 dp is beyond any
+    indicator's meaningful precision and a third of the characters)."""
+    try:
+        return f"{float(value):.4f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return value
 
 
 def _get_stock_stats_bulk(

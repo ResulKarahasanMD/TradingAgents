@@ -46,7 +46,13 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
     will use free-text generation for every call instead of one-shot fallback.
     """
     try:
-        return llm.with_structured_output(schema)
+        try:
+            # include_raw keeps the model's own message next to the parsed
+            # result, so a plain-text answer can be reused instead of paying for
+            # a second, identical generation (see invoke_structured_or_freetext).
+            return llm.with_structured_output(schema, include_raw=True)
+        except TypeError:
+            return llm.with_structured_output(schema)
     except (NotImplementedError, AttributeError) as exc:
         logger.warning(
             "%s: provider does not support with_structured_output (%s); "
@@ -54,6 +60,23 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
             agent_name, exc,
         )
         return None
+
+
+# Below this a plain-text reply is a stub ("I'll call the tool..."), not a report.
+_MIN_REUSABLE_CHARS = 200
+
+
+def _reusable_text(raw: Any) -> str | None:
+    """The raw message's text when it is a substantive free-text answer."""
+    content = getattr(raw, "content", None)
+    if isinstance(content, list):  # content blocks (Responses API / Anthropic)
+        content = "".join(
+            block.get("text", "") for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    if isinstance(content, str) and len(content.strip()) >= _MIN_REUSABLE_CHARS:
+        return content
+    return None
 
 
 def invoke_structured_or_freetext(
@@ -73,6 +96,19 @@ def invoke_structured_or_freetext(
     if structured_llm is not None:
         try:
             result = structured_llm.invoke(prompt)
+            if isinstance(result, dict) and "parsed" in result:
+                raw_text = _reusable_text(result.get("raw"))
+                result = result["parsed"]
+                if result is None and raw_text:
+                    # The model answered in prose instead of calling the schema
+                    # tool. The free-text fallback would send this same prompt
+                    # again and get this same kind of answer, so use it.
+                    logger.warning(
+                        "%s: structured output not produced; using the model's "
+                        "free-text answer from the same call",
+                        agent_name,
+                    )
+                    return raw_text
             if result is None:
                 # A thinking model can answer in plain text instead of calling
                 # the tool, leaving the parser with nothing to return. Treat it

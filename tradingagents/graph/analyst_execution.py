@@ -1,6 +1,11 @@
-from collections.abc import Iterable
+import contextvars
+from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from time import monotonic
+from typing import Any
+
+from langchain_core.messages import ToolMessage
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,97 @@ def build_analyst_execution_plan(
         raise ValueError("at least one analyst must be selected")
 
     return AnalystExecutionPlan(specs=specs)
+
+
+PARALLEL_ANALYST_NODE = "Analyst Team"
+
+# Bound on one analyst's agent<->tools loop inside the team node, where the
+# graph-level recursion limit cannot see the individual rounds.
+MAX_ANALYST_TOOL_ROUNDS = 25
+
+
+def _run_tool_calls(tool_node: Any, tool_calls: list[dict]) -> list[ToolMessage]:
+    """Execute one round of tool calls against a ToolNode's registered tools.
+
+    ToolNode.invoke() needs the LangGraph runtime of the node it is mounted on,
+    which a worker thread inside another node does not have, so the tools are
+    called directly. A failing or unknown tool becomes an error ToolMessage so
+    the analyst can recover, rather than aborting its three siblings.
+    """
+    results: list[ToolMessage] = []
+    for call in tool_calls:
+        try:
+            tool = tool_node.tools_by_name[call["name"]]
+            result = tool.invoke({**call, "type": "tool_call"})
+        except Exception as exc:  # noqa: BLE001 - surfaced to the model
+            result = ToolMessage(
+                content=f"Error: {exc!r}\n Please fix your mistakes.",
+                name=call.get("name", "tool"),
+                tool_call_id=call["id"],
+                status="error",
+            )
+        results.append(result)
+    return results
+
+
+def _run_analyst_loop(
+    spec: AnalystNodeSpec,
+    analyst_node: Callable[[dict], dict],
+    tool_node: Any,
+    state: Mapping[str, Any],
+) -> str:
+    """Drive one analyst's agent<->tools loop on a private message history."""
+    messages = list(state["messages"])
+    for _ in range(MAX_ANALYST_TOOL_ROUNDS):
+        update = analyst_node({**state, "messages": messages})
+        new_messages = list(update.get("messages", []))
+        messages.extend(new_messages)
+        last = new_messages[-1] if new_messages else None
+        if last is not None and getattr(last, "tool_calls", None):
+            messages.extend(_run_tool_calls(tool_node, last.tool_calls))
+            continue
+        return update.get(spec.report_key, "")
+    raise RuntimeError(
+        f"{spec.agent_node} exceeded {MAX_ANALYST_TOOL_ROUNDS} tool rounds without a report"
+    )
+
+
+def create_parallel_analyst_team(
+    plan: AnalystExecutionPlan,
+    analyst_nodes: Mapping[str, Callable[[dict], dict]],
+    tool_nodes: Mapping[str, Any],
+):
+    """One graph node that runs every selected analyst concurrently.
+
+    The analysts are independent (each reads only the instrument context and
+    writes only its own report), but the sequential graph serialises them on the
+    shared ``messages`` channel. Here each gets a private copy of the message
+    history, so wall time drops from the sum of the analysts to the slowest one.
+    The work is LLM/network-bound, so threads are sufficient. Only the reports
+    are written back; the shared ``messages`` channel is left untouched, which
+    also makes the per-analyst "Msg Clear" nodes unnecessary.
+    """
+
+    def analyst_team_node(state):
+        with ThreadPoolExecutor(
+            max_workers=len(plan.specs), thread_name_prefix="analyst"
+        ) as pool:
+            # copy_context() carries the LangChain run config (callbacks,
+            # tracing) into the worker threads.
+            futures = {
+                spec.report_key: pool.submit(
+                    contextvars.copy_context().run,
+                    _run_analyst_loop,
+                    spec,
+                    analyst_nodes[spec.key],
+                    tool_nodes[spec.key],
+                    state,
+                )
+                for spec in plan.specs
+            }
+            return {report_key: future.result() for report_key, future in futures.items()}
+
+    return analyst_team_node
 
 
 def get_initial_analyst_node(plan: AnalystExecutionPlan) -> str:

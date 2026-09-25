@@ -35,6 +35,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .config import get_config
 from .date_window import in_window
 from .symbol_utils import crypto_base
 
@@ -261,6 +262,24 @@ def _fetch_subreddit(
     return _fetch_subreddit_rss(ticker, sub, limit, timeout, _retry=_retry)
 
 
+def _backoff_budget_seconds() -> float | None:
+    """Configured cap on the time one call may spend before it stops backing off.
+
+    ``None`` (the default) keeps the unbounded behaviour: every subreddit may
+    spend its one ~60s back-off, up to ~3 minutes per analysis.
+    """
+    raw = get_config().get("reddit_backoff_budget_seconds")
+    if raw is None or raw == "":
+        return None
+    try:
+        budget = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"reddit_backoff_budget_seconds must be a number, got {raw!r}") from exc
+    if budget < 0:
+        raise ValueError(f"reddit_backoff_budget_seconds must be >= 0, got {raw!r}")
+    return budget
+
+
 def fetch_reddit_posts(
     ticker: str,
     subreddits: Iterable[str] = DEFAULT_SUBREDDITS,
@@ -289,9 +308,17 @@ def fetch_reddit_posts(
     total_posts = 0
     unavailable = []
     allow_retry = True
+    budget = _backoff_budget_seconds()
+    started = time.monotonic()
     for i, sub in enumerate(subreddits):
         if i > 0 and inter_request_delay:
             time.sleep(_jitter(inter_request_delay))
+        # Once the call has cost this much wall time, stop spending 60s
+        # back-offs: a rate-limited subreddit is then reported unavailable
+        # (never as "no posts") instead of stalling the analysis. 0 disables
+        # the back-off entirely.
+        if budget is not None and time.monotonic() - started >= budget:
+            allow_retry = False
         fetched = _fetch_subreddit(ticker, sub, limit_per_sub, timeout, _retry=allow_retry)
         if fetched is None:
             # A failed fetch is not an absence of discussion, so it must not be

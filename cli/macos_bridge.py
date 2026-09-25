@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import traceback
 from collections import deque
 from dataclasses import dataclass
@@ -448,7 +449,36 @@ def classify_message(message: Any) -> tuple[str, str | None]:
     return ("System", content)
 
 
-def update_analyst_statuses(tracker: SessionTracker, chunk: dict[str, Any]) -> None:
+# The app is interactive, so it opts into the speed knobs the library keeps off
+# by default. An explicit TRADINGAGENTS_* env value (including "false") wins.
+APP_SPEED_DEFAULTS = {
+    "parallel_analysts": ("TRADINGAGENTS_PARALLEL_ANALYSTS", True),
+    "reddit_backoff_budget_seconds": ("TRADINGAGENTS_REDDIT_BACKOFF_BUDGET", 30),
+    "llm_timeout": ("TRADINGAGENTS_LLM_TIMEOUT", 300),
+}
+
+
+def build_run_config(request: AnalysisRequest) -> dict[str, Any]:
+    config = DEFAULT_CONFIG.copy()
+    for key, (env_var, value) in APP_SPEED_DEFAULTS.items():
+        if not os.environ.get(env_var):
+            config[key] = value
+    config["max_debate_rounds"] = request.research_depth
+    config["max_risk_discuss_rounds"] = request.research_depth
+    config["quick_think_llm"] = request.shallow_thinker
+    config["deep_think_llm"] = request.deep_thinker
+    config["backend_url"] = request.backend_url
+    config["llm_provider"] = request.llm_provider
+    config["google_thinking_level"] = request.google_thinking_level
+    config["openai_reasoning_effort"] = request.openai_reasoning_effort
+    config["anthropic_effort"] = request.anthropic_effort
+    config["output_language"] = request.output_language
+    return config
+
+
+def update_analyst_statuses(
+    tracker: SessionTracker, chunk: dict[str, Any], parallel: bool = False
+) -> None:
     found_active = False
 
     for analyst_key in ANALYST_ORDER:
@@ -464,7 +494,8 @@ def update_analyst_statuses(tracker: SessionTracker, chunk: dict[str, Any]) -> N
         has_report = bool(tracker.report_sections.get(report_key))
         if has_report:
             tracker.update_agent_status(agent_name, "completed")
-        elif not found_active:
+        elif parallel or not found_active:
+            # With parallel_analysts every unfinished analyst is running.
             tracker.update_agent_status(agent_name, "in_progress")
             found_active = True
         else:
@@ -543,17 +574,7 @@ def run_analysis(request: AnalysisRequest) -> tuple[dict[str, Any], Path, Sessio
     tracker = SessionTracker(request, session_dir)
     stats_handler = StatsCallbackHandler()
 
-    config = DEFAULT_CONFIG.copy()
-    config["max_debate_rounds"] = request.research_depth
-    config["max_risk_discuss_rounds"] = request.research_depth
-    config["quick_think_llm"] = request.shallow_thinker
-    config["deep_think_llm"] = request.deep_thinker
-    config["backend_url"] = request.backend_url
-    config["llm_provider"] = request.llm_provider
-    config["google_thinking_level"] = request.google_thinking_level
-    config["openai_reasoning_effort"] = request.openai_reasoning_effort
-    config["anthropic_effort"] = request.anthropic_effort
-    config["output_language"] = request.output_language
+    config = build_run_config(request)
 
     graph = TradingAgentsGraph(
         request.analysts,
@@ -590,7 +611,7 @@ def run_analysis(request: AnalysisRequest) -> tuple[dict[str, Any], Path, Sessio
                     else:
                         tracker.add_tool_call(getattr(tool_call, "name", "tool"), getattr(tool_call, "args", {}))
 
-        update_analyst_statuses(tracker, chunk)
+        update_analyst_statuses(tracker, chunk, parallel=bool(config.get("parallel_analysts")))
 
         debate_state = chunk.get("investment_debate_state")
         if debate_state:

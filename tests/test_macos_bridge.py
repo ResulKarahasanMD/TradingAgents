@@ -1,7 +1,9 @@
 import datetime as dt
 import unittest
 
-from cli.macos_bridge import build_catalog, normalize_request
+from unittest.mock import patch
+
+from cli.macos_bridge import build_catalog, build_run_config, normalize_request
 
 
 class MacOSBridgeTests(unittest.TestCase):
@@ -68,3 +70,34 @@ class MacOSBridgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MacOSBridgeRunConfigTests(unittest.TestCase):
+    def _request(self):
+        return normalize_request(
+            {
+                "ticker": "SPY",
+                "analysis_date": dt.date.today().isoformat(),
+                "analysts": ["market"],
+                "research_depth": 1,
+                "llm_provider": "ollama_cloud",
+                "shallow_thinker": "glm-5.3-flash",
+                "deep_thinker": "kimi-k3",
+                "output_language": "English",
+            }
+        )
+
+    def test_app_enables_speed_knobs_by_default(self):
+        env = {k: "" for k in ("TRADINGAGENTS_PARALLEL_ANALYSTS", "TRADINGAGENTS_REDDIT_BACKOFF_BUDGET", "TRADINGAGENTS_LLM_TIMEOUT")}
+        with patch.dict("os.environ", env):
+            config = build_run_config(self._request())
+        self.assertIs(config["parallel_analysts"], True)
+        self.assertEqual(config["reddit_backoff_budget_seconds"], 30)
+        self.assertEqual(config["llm_timeout"], 300)
+        self.assertEqual(config["llm_provider"], "ollama_cloud")
+
+    def test_explicit_env_value_is_not_overridden(self):
+        with patch.dict("os.environ", {"TRADINGAGENTS_PARALLEL_ANALYSTS": "false"}), \
+             patch.dict("cli.macos_bridge.DEFAULT_CONFIG", {"parallel_analysts": False}):
+            config = build_run_config(self._request())
+        self.assertIs(config["parallel_analysts"], False)
